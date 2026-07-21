@@ -1,0 +1,14 @@
+.DS_Store
+.venv/
+node_modules/
+skills/photo-to-hand-drawn-video/scripts/models/
+skills/photo-to-hand-drawn-video/scripts/vendor/
+skills/photo-to-hand-drawn-video/scripts/runs/
+runs/
+*.mp4
+!docs/demo-s-kitten-silent.mp4
+*.mov
+*.mp3
+*.wav
+__pycache__/
+*.pyc

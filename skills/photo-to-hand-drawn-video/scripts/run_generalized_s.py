@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Run the generalized S planning and rendering pipeline."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import urlencode
+
+from PIL import Image
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+RENDERER_HTML = PROJECT_ROOT / "marker-brush-animation-s-upper-bound-7x.html"
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Preflight, semantically plan, optimize, and optionally render a generalized S run."
+    )
+    parser.add_argument("--reference", required=True, type=Path)
+    parser.add_argument("--target", required=True, type=Path)
+    parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument(
+        "--subject-type",
+        choices=("auto", "human", "animal"),
+        default="auto",
+        help="Use MediaPipe for a person or the central companion-animal adapter.",
+    )
+    parser.add_argument("--attempt", type=int, default=0, choices=(0, 1, 2))
+    parser.add_argument("--budget-scale", type=float, default=2.0)
+    parser.add_argument("--render", action="store_true")
+    parser.add_argument("--duration", type=float, default=64.03)
+    parser.add_argument("--fps", type=int, default=25)
+    parser.add_argument("--music", type=Path)
+    parser.add_argument("--skip-video-validation", action="store_true")
+    return parser.parse_args()
+
+
+def run_command(
+    command: list[str],
+    accepted_exit_codes: set[int] | None = None,
+    environment: dict[str, str] | None = None,
+) -> int:
+    completed = subprocess.run(
+        command,
+        cwd=PROJECT_ROOT,
+        check=False,
+        env=environment,
+    )
+    accepted = accepted_exit_codes or {0}
+    if completed.returncode not in accepted:
+        raise subprocess.CalledProcessError(completed.returncode, command)
+    return completed.returncode
+
+
+def stage_image(source_path: Path, destination_path: Path, format_name: str) -> None:
+    image = Image.open(source_path).convert("RGB")
+    save_options = {"quality": 95, "subsampling": 0} if format_name == "JPEG" else {}
+    image.save(destination_path, format=format_name, **save_options)
+
+
+def project_relative_url(path: Path) -> str:
+    return path.resolve().relative_to(PROJECT_ROOT).as_posix()
+
+
+def run_semantic_preflight(
+    subject_type: str,
+    reference_path: Path,
+    target_path: Path,
+    run_directory: Path,
+    attempt: int,
+) -> tuple[int, dict]:
+    report_path = run_directory / "semantic-preflight.json"
+
+    if subject_type in {"auto", "human"}:
+        human_exit_code = run_command(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "semantic_preflight.py"),
+                "--reference",
+                str(reference_path),
+                "--target",
+                str(target_path),
+                "--output-dir",
+                str(run_directory),
+                "--attempt",
+                str(attempt),
+            ],
+            accepted_exit_codes={0, 2, 3},
+        )
+        if human_exit_code == 0 or subject_type == "human":
+            return human_exit_code, json.loads(report_path.read_text(encoding="utf-8"))
+
+    run_command(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "semantic_preflight_animal.py"),
+            "--reference",
+            str(reference_path),
+            "--target",
+            str(target_path),
+            "--output-dir",
+            str(run_directory),
+            "--report-name",
+            report_path.name,
+        ]
+    )
+    return 0, json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    run_directory = arguments.run_dir.resolve()
+    try:
+        run_directory.relative_to(PROJECT_ROOT)
+    except ValueError as error:
+        raise ValueError("--run-dir must be inside the project directory") from error
+    run_directory.mkdir(parents=True, exist_ok=True)
+
+    staged_reference = run_directory / "reference.jpg"
+    staged_target = run_directory / "target.png"
+    stage_image(arguments.reference, staged_reference, "JPEG")
+    stage_image(arguments.target, staged_target, "PNG")
+
+    semantic_report = run_directory / "semantic-preflight.json"
+    preflight_exit_code, preflight = run_semantic_preflight(
+        arguments.subject_type,
+        staged_reference,
+        staged_target,
+        run_directory,
+        arguments.attempt,
+    )
+    if preflight_exit_code != 0:
+        print(json.dumps(preflight, ensure_ascii=False, indent=2))
+        return preflight_exit_code
+
+    base_plan_json = run_directory / "generalized-base-plan.json"
+    base_plan_javascript = run_directory / "generalized-base-plan.js"
+    base_preview = run_directory / "generalized-base-preview.png"
+    base_metrics = run_directory / "generalized-base-metrics.json"
+    run_command(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "build_generalized_s_base_plan.py"),
+            "--target",
+            str(staged_target),
+            "--semantic-report",
+            str(semantic_report),
+            "--plan-json",
+            str(base_plan_json),
+            "--plan-js",
+            str(base_plan_javascript),
+            "--preview",
+            str(base_preview),
+            "--metrics",
+            str(base_metrics),
+            "--budget-scale",
+            str(arguments.budget_scale),
+        ]
+    )
+
+    final_plan_json = run_directory / "generalized-s-plan.json"
+    final_plan_javascript = run_directory / "generalized-s-plan.js"
+    final_preview = run_directory / "generalized-s-preview.png"
+    final_metrics = run_directory / "generalized-s-metrics.json"
+    run_command(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "build_upper_limit_plan_s.py"),
+            "--target",
+            str(staged_target),
+            "--base-plan",
+            str(base_plan_json),
+            "--base-preview",
+            str(base_preview),
+            "--semantic-report",
+            str(semantic_report),
+            "--plan-json",
+            str(final_plan_json),
+            "--plan-js",
+            str(final_plan_javascript),
+            "--preview",
+            str(final_preview),
+            "--metrics",
+            str(final_metrics),
+            "--budget-scale",
+            str(arguments.budget_scale),
+            "--javascript-global",
+            "MARKER_PAINT_PLAN_GENERALIZED",
+        ]
+    )
+
+    renderer_query = urlencode(
+        {
+            "reference": project_relative_url(staged_reference),
+            "plan": project_relative_url(final_plan_javascript),
+            "planGlobal": "MARKER_PAINT_PLAN_GENERALIZED",
+        }
+    )
+    raw_video = run_directory / "generalized-s-raw.mp4"
+    final_video = run_directory / "generalized-s.mp4"
+    if arguments.render:
+        render_environment = os.environ.copy()
+        bundled_node_modules = (
+            Path.home()
+            / ".cache"
+            / "codex-runtimes"
+            / "codex-primary-runtime"
+            / "dependencies"
+            / "node"
+            / "node_modules"
+        )
+        if not render_environment.get("NODE_PATH") and bundled_node_modules.exists():
+            render_environment["NODE_PATH"] = str(bundled_node_modules)
+        run_command(
+            [
+                "node",
+                str(PROJECT_ROOT / "render-video-chunked.cjs"),
+                str(RENDERER_HTML),
+                f"--duration={arguments.duration}",
+                f"--fps={arguments.fps}",
+                f"--query={renderer_query}",
+                f"--output={raw_video}",
+            ],
+            environment=render_environment,
+        )
+        if arguments.music:
+            fade_start = max(0.0, arguments.duration - 2.0)
+            run_command(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-stream_loop",
+                    "-1",
+                    "-i",
+                    str(arguments.music),
+                    "-i",
+                    str(raw_video),
+                    "-map",
+                    "1:v:0",
+                    "-map",
+                    "0:a:0",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-filter:a",
+                    f"volume=0.22,afade=t=out:st={fade_start}:d=2",
+                    "-shortest",
+                    "-movflags",
+                    "+faststart",
+                    str(final_video),
+                ]
+            )
+        else:
+            final_video = raw_video
+
+    validation_report = None
+    if arguments.render and not arguments.skip_video_validation:
+        validation_report = run_directory / "video-validation.json"
+        run_command(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "validate_painting_video.py"),
+                "--video",
+                str(final_video),
+                "--crop",
+                "60,390,960,960",
+                "--target",
+                str(staged_target),
+                "--frame-step",
+                "5",
+                "--report",
+                str(validation_report),
+            ]
+        )
+
+    summary = {
+        "schemaVersion": 1,
+        "status": "PASS",
+        "contract": preflight.get("contract"),
+        "subjectType": "animal"
+        if preflight.get("contract") == "single-companion-animal-photo-v1"
+        else "human",
+        "attempt": arguments.attempt,
+        "budgetScale": arguments.budget_scale,
+        "semanticReport": project_relative_url(semantic_report),
+        "plan": project_relative_url(final_plan_json),
+        "preview": project_relative_url(final_preview),
+        "renderer": project_relative_url(RENDERER_HTML),
+        "rendererQuery": renderer_query,
+        "video": project_relative_url(final_video) if arguments.render else None,
+        "videoValidation": project_relative_url(validation_report)
+        if validation_report
+        else None,
+        "visualReviewRequired": True,
+        "privacySanitizationRequired": True,
+    }
+    summary_path = run_directory / "run-summary.json"
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,12 @@
+{
+  "name": "photo-to-hand-drawn-video-skill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic stroke-by-stroke photo drawing video renderer",
+  "scripts": {
+    "install:browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "1.54.1"
+  }
+}
