@@ -12,6 +12,7 @@ Usage:
 """
 import argparse
 import json
+import subprocess
 
 import cv2
 import numpy as np
@@ -96,15 +97,26 @@ def main() -> int:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    writer = cv2.VideoWriter(
-        arguments.output,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (width, height),
+    # Encode with ffmpeg/libx264 (H.264) — cv2's mp4v (MPEG-4 Part 2) is not
+    # playable by QuickTime/browsers on macOS.
+    encoder = subprocess.Popen(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel", "error",
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "-s", f"{width}x{height}",
+            "-r", str(fps),
+            "-i", "-",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-crf", "18",
+            "-preset", "medium",
+            arguments.output,
+        ],
+        stdin=subprocess.PIPE,
     )
-    if not writer.isOpened():
-        print("failed to open output writer")
-        return 1
 
     frame_index = 0
     while True:
@@ -117,14 +129,18 @@ def main() -> int:
         trace_position = min(trace_position, len(trace) - 1)
         if valid[trace_position]:
             draw_brush(frame, x[trace_position], y[trace_position])
-        writer.write(frame)
+        encoder.stdin.write(frame.tobytes())
         frame_index += 1
         if frame_index % 64 == 0:
             print(f"  {frame_index}/{total}")
 
     cap.release()
-    writer.release()
-    print(f"done: {arguments.output} ({frame_index} frames)")
+    encoder.stdin.close()
+    encoder.wait()
+    if encoder.returncode != 0:
+        print(f"ffmpeg exited with {encoder.returncode}")
+        return 1
+    print(f"done: {arguments.output} ({frame_index} frames, H.264)")
     return 0
 
 
