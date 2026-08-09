@@ -334,10 +334,13 @@
       activeCanvas.width = ARTBOARD_SIZE;
       activeCanvas.height = ARTBOARD_SIZE;
       const artViewport = document.getElementById('art-viewport');
-      artViewport.style.width = `${ARTBOARD_VIEW_SIZE}px`;
-      artViewport.style.height = `${ARTBOARD_VIEW_SIZE}px`;
-      artViewport.style.top = `${Math.max(24, Math.round(STAGE_HEIGHT * 0.27))}px`;
-      artViewport.style.left = `${Math.max(24, Math.round((STAGE_WIDTH - ARTBOARD_VIEW_SIZE) / 2))}px`;
+      const VIEW_SIZE = ARTBOARD_VIEW_SIZE;
+      const VIEW_LEFT = Math.max(24, Math.round((STAGE_WIDTH - VIEW_SIZE) / 2));
+      const VIEW_TOP = Math.max(24, Math.round(STAGE_HEIGHT * 0.27));
+      artViewport.style.width = `${VIEW_SIZE}px`;
+      artViewport.style.height = `${VIEW_SIZE}px`;
+      artViewport.style.top = `${VIEW_TOP}px`;
+      artViewport.style.left = `${VIEW_LEFT}px`;
       for (const canvasElement of [artCanvas, refineCanvas, activeCanvas]) {
         canvasElement.style.width = `${ARTBOARD_VIEW_SIZE}px`;
         canvasElement.style.height = `${ARTBOARD_VIEW_SIZE}px`;
@@ -865,7 +868,7 @@
         boardGradient.addColorStop(0.48, '#2d4b44');
         boardGradient.addColorStop(1, '#213b35');
         stageContext.fillStyle = boardGradient;
-        stageContext.fillRect(20, 18, 1040, 1404);
+        stageContext.fillRect(20, 18, STAGE_WIDTH - 40, STAGE_HEIGHT - 36);
         stageContext.save();
         stageContext.globalAlpha = 0.22;
         stageContext.strokeStyle = '#8bb0a4';
@@ -873,26 +876,36 @@
         for (let gridX = 32; gridX < STAGE_WIDTH; gridX += 40) {
           stageContext.beginPath();
           stageContext.moveTo(gridX, 20);
-          stageContext.lineTo(gridX, 1420);
+          stageContext.lineTo(gridX, STAGE_HEIGHT - 20);
           stageContext.stroke();
         }
         for (let gridY = 30; gridY < STAGE_HEIGHT; gridY += 40) {
           stageContext.beginPath();
           stageContext.moveTo(20, gridY);
-          stageContext.lineTo(1060, gridY);
+          stageContext.lineTo(STAGE_WIDTH - 20, gridY);
           stageContext.stroke();
         }
         stageContext.restore();
+        // Paper sheet: slightly larger than the art viewport so the sheet
+        // edge stays visible; position must track the viewport exactly.
+        const paperLeft = VIEW_LEFT - 10;
+        const paperTop = VIEW_TOP - 14;
+        const paperSize = VIEW_SIZE + 20;
         stageContext.save();
         stageContext.shadowColor = 'rgba(4,16,13,0.48)';
         stageContext.shadowBlur = 26;
         stageContext.shadowOffsetY = 13;
         stageContext.fillStyle = strokePlan.paperColor;
-        stageContext.fillRect(48, 378, 984, 984);
+        stageContext.fillRect(paperLeft, paperTop, paperSize, paperSize);
         stageContext.restore();
         stageContext.save();
         stageContext.fillStyle = 'rgba(225, 205, 157, 0.84)';
-        [[76, 365, -0.06], [890, 365, 0.05], [76, 1348, 0.05], [890, 1348, -0.06]].forEach(([x, y, angle]) => {
+        [
+          [paperLeft + 18, paperTop - 11, -0.06],
+          [paperLeft + paperSize - 112, paperTop - 11, 0.05],
+          [paperLeft + 18, paperTop + paperSize - 14, 0.05],
+          [paperLeft + paperSize - 112, paperTop + paperSize - 14, -0.06],
+        ].forEach(([x, y, angle]) => {
           stageContext.translate(x, y);
           stageContext.rotate(angle);
           stageContext.fillRect(0, 0, 96, 25);
