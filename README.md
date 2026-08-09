@@ -125,7 +125,7 @@ Use $photo-to-hand-drawn-video to turn this photo into a real stroke-by-stroke d
   --budget-scale 0.5
 ```
 
-宠物把 `--subject-type human` 改成 `animal`。确认 `semantic-preflight.json` 为 `PASS`，再打开 `generalized-s-preview.png` 看主体、脸/头部和背景顺序是否合理。
+宠物把 `--subject-type human` 改成 `animal`。二次元/动漫插画用 `anime`（自动用头发蒙版估算脸部，不需要 MediaPipe 人脸检测）。确认 `semantic-preflight.json` 为 `PASS`，再打开 `generalized-s-preview.png` 看主体、脸/头部和背景顺序是否合理。
 
 ### 3. 跑 S 高精版成片
 
@@ -147,6 +147,22 @@ Use $photo-to-hand-drawn-video to turn this photo into a real stroke-by-stroke d
 --music /absolute/path/music.mp3
 ```
 
+### 3b. 抖音竖屏 9:16 + 笔刷风格（可选）
+
+```bash
+.venv/bin/python skills/photo-to-hand-drawn-video/scripts/run_generalized_s.py \
+  --reference /absolute/path/reference.jpg \
+  --target /absolute/path/target.png \
+  --subject-type anime \
+  --run-dir skills/photo-to-hand-drawn-video/scripts/runs/douyin-run \
+  --budget-scale 1.0 \
+  --render \
+  --stage-width 1080 --stage-height 1920 \
+  --brush-style marker
+```
+
+竖屏输出 1080×1920（9:16），画纸自动居中放大。笔刷风格可选：`marker`（默认，马克笔/漫画感）、`pencil`（铅笔素描颗粒）、`ink`（水墨淡彩）、`airbrush`（喷枪柔焦）。
+
 输出目录包含：
 
 - `semantic-preflight.json` 和自动区域蒙版；
@@ -164,6 +180,10 @@ Use $photo-to-hand-drawn-video to turn this photo into a real stroke-by-stroke d
 - `--budget-scale 1.0`：常规质量。
 - `--budget-scale 2.0`：S 保留版质量，耗时和笔迹数明显增加。
 - `--subject-type auto`：先尝试人物预检，失败后回退宠物适配器；需要先安装 MediaPipe 模型。
+- `--subject-type anime`：二次元/动漫插画专用适配器，用头发蒙版估算脸部区域，对 2D 脸更稳定。
+- `--stage-width / --stage-height`：输出视频尺寸，默认 1080×1440（3:4 竖屏）；抖音 9:16 用 `1080 1920`。
+- `--artboard-size`：内部超采样画布边长，默认 3840（画质优先）；内存紧张时用 `2880`。
+- `--brush-style`：笔刷风格，`marker`（默认）/ `pencil` / `ink` / `airbrush`。
 - `--skip-video-validation`：只在调试时用，正式结果不建议跳过。
 
 渲染器会暂存逐帧 PNG，磁盘占用可能达到数 GB。计划阶段也可能持续数分钟，2.0 预算不适合拿来反复试错，所以一定先跑 0.5 预览。

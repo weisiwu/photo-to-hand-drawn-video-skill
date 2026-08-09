@@ -282,6 +282,36 @@ def describe_bounds(
     return bounds.as_dict(width, height) if bounds else None
 
 
+def estimate_face_from_hair(
+    hair_mask: np.ndarray, width: int, height: int
+) -> Bounds | None:
+    """Approximate a stylized 2D face region from the hair mask.
+
+    MediaPipe is trained on real faces and often misses anime faces. For
+    stylized illustrations the face sits around the upper-center of the hair
+    region (observed ~0.69w, ~0.22h inside hair bounds for the tested set).
+    """
+    hair_bounds = mask_bounds(hair_mask)
+    if not hair_bounds:
+        return None
+    hair_w = max(1, hair_bounds.width)
+    hair_h = max(1, hair_bounds.height)
+    face_w = max(12, round(hair_w * 0.5))
+    face_h = max(12, round(hair_h * 0.28))
+    face_cx = round(hair_bounds.left + hair_w * 0.69)
+    face_cy = round(hair_bounds.top + hair_h * 0.22)
+    face_left = max(0, face_cx - face_w // 2)
+    face_top = max(0, face_cy - face_h // 2)
+    face_right = min(width, face_left + face_w)
+    face_bottom = min(height, face_top + face_h)
+    return Bounds(
+        face_left,
+        face_top,
+        max(face_left + 1, face_right),
+        max(face_top + 1, face_bottom),
+    )
+
+
 def analyze_image(
     image_path: Path,
     prefix: str,
@@ -289,13 +319,12 @@ def analyze_image(
     face_landmarker: vision.FaceLandmarker,
     segmenter: vision.ImageSegmenter,
     long_range_face_detector: Any,
+    anime_mode: bool = False,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray], list[str]]:
     source_image = Image.open(image_path).convert("RGB")
     width, height = source_image.size
     source_rgb = np.asarray(source_image)
     media_image = mp.Image.create_from_file(str(image_path))
-    direct_face_result = face_landmarker.detect(media_image)
-    detector_result = long_range_face_detector.process(source_rgb)
     segment_result = segmenter.segment(media_image)
     category_mask = np.array(segment_result.category_mask.numpy_view(), copy=True)
 
@@ -305,57 +334,61 @@ def analyze_image(
     }
     masks["subject"] = np.isin(category_mask, SUBJECT_LABELS)
 
-    face_detections = detector_result.detections or []
-    detected_face_bounds = [detection_bounds(detection, width, height) for detection in face_detections]
-    detected_face_scores = [round(float(detection.score[0]), 6) for detection in face_detections]
-    face_count = len(detected_face_bounds)
-    landmark_source = "long-range-crop"
-    face_landmarks: list[Any] = []
-    if face_count == 1:
-        face_landmarks = crop_face_landmarks(
-            source_rgb, detected_face_bounds[0], face_landmarker
-        )
-    elif face_count == 0 and len(direct_face_result.face_landmarks) == 1:
-        face_count = 1
-        face_landmarks = direct_face_result.face_landmarks[0]
-        landmark_source = "direct"
-
-    if face_count == 1 and face_landmarks:
-        masks["face_hull"] = face_mask_from_landmarks(
-            face_landmarks, width, height
-        )
-    elif face_count == 1 and detected_face_bounds:
-        masks["face_hull"] = face_mask_from_bounds(
-            detected_face_bounds[0], width, height
-        )
-        landmark_source = "detector-bounds-fallback"
-    else:
-        # Anime fallback: MediaPipe is trained on real faces and often misses
-        # stylized 2D faces. Approximate the face from the hair mask: the face
-        # sits around the upper-center of the hair region (observed ~0.69w,
-        # ~0.22h inside hair bounds for the tested illustration set).
-        hair_mask = masks.get("hair", np.zeros((height, width), dtype=bool))
-        hair_bounds_fallback = mask_bounds(hair_mask)
+    if anime_mode:
+        # Anime mode: MediaPipe face detectors are unreliable on stylized 2D
+        # faces, so drive the face region purely from the hair mask. This
+        # removes run-to-run detection randomness.
+        face_detections: list[Any] = []
+        detected_face_bounds: list[Bounds] = []
+        detected_face_scores: list[float] = []
+        face_count = 0
+        landmark_source = "anime-hair-fallback"
+        face_landmarks: list[Any] = []
+        hair_bounds_fallback = estimate_face_from_hair(masks["hair"], width, height)
         if hair_bounds_fallback:
-            hair_w = max(1, hair_bounds_fallback.width)
-            hair_h = max(1, hair_bounds_fallback.height)
-            face_w = max(12, round(hair_w * 0.5))
-            face_h = max(12, round(hair_h * 0.28))
-            face_cx = round(hair_bounds_fallback.left + hair_w * 0.69)
-            face_cy = round(hair_bounds_fallback.top + hair_h * 0.22)
-            face_left = max(0, face_cx - face_w // 2)
-            face_top = max(0, face_cy - face_h // 2)
-            face_right = min(width, face_left + face_w)
-            face_bottom = min(height, face_top + face_h)
-            fallback_bounds = Bounds(
-                face_left, face_top, max(face_left + 1, face_right), max(face_top + 1, face_bottom)
-            )
-            masks["face_hull"] = face_mask_from_bounds(fallback_bounds, width, height)
+            masks["face_hull"] = face_mask_from_bounds(hair_bounds_fallback, width, height)
             face_count = 1
-            landmark_source = "anime-hair-fallback"
-            detected_face_bounds = [fallback_bounds]
+            detected_face_bounds = [hair_bounds_fallback]
         else:
             masks["face_hull"] = np.zeros((height, width), dtype=bool)
+    else:
+        direct_face_result = face_landmarker.detect(media_image)
+        detector_result = long_range_face_detector.process(source_rgb)
+        face_detections = detector_result.detections or []
+        detected_face_bounds = [detection_bounds(detection, width, height) for detection in face_detections]
+        detected_face_scores = [round(float(detection.score[0]), 6) for detection in face_detections]
+        face_count = len(detected_face_bounds)
+        landmark_source = "long-range-crop"
+        face_landmarks: list[Any] = []
+        if face_count == 1:
+            face_landmarks = crop_face_landmarks(
+                source_rgb, detected_face_bounds[0], face_landmarker
+            )
+        elif face_count == 0 and len(direct_face_result.face_landmarks) == 1:
+            face_count = 1
+            face_landmarks = direct_face_result.face_landmarks[0]
+            landmark_source = "direct"
+
+        if face_count == 1 and face_landmarks:
+            masks["face_hull"] = face_mask_from_landmarks(
+                face_landmarks, width, height
+            )
+        elif face_count == 1 and detected_face_bounds:
+            masks["face_hull"] = face_mask_from_bounds(
+                detected_face_bounds[0], width, height
+            )
+            landmark_source = "detector-bounds-fallback"
+        else:
+            # Anime fallback: MediaPipe is trained on real faces and often misses
+            # stylized 2D faces. Approximate the face from the hair mask.
+            hair_bounds_fallback = estimate_face_from_hair(masks["hair"], width, height)
+            if hair_bounds_fallback:
+                masks["face_hull"] = face_mask_from_bounds(hair_bounds_fallback, width, height)
+                face_count = 1
+                landmark_source = "anime-hair-fallback"
+                detected_face_bounds = [hair_bounds_fallback]
+            else:
+                masks["face_hull"] = np.zeros((height, width), dtype=bool)
 
     face_bounds = mask_bounds(masks["face_hull"])
     if face_bounds:

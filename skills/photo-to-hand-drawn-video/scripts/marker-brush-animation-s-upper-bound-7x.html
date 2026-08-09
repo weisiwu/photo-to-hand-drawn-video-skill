@@ -84,10 +84,11 @@
     (async () => {
       'use strict';
 
-      const STAGE_WIDTH = 1080;
-      const STAGE_HEIGHT = 1440;
-      const ARTBOARD_SIZE = 2880;
-      const ARTBOARD_VIEW_SIZE = 960;
+      const pageParameters = new URLSearchParams(window.location.search);
+      const STAGE_WIDTH = parseInt(pageParameters.get('stageW') || '1080', 10);
+      const STAGE_HEIGHT = parseInt(pageParameters.get('stageH') || '1440', 10);
+      const ARTBOARD_SIZE = parseInt(pageParameters.get('artboard') || '3840', 10);
+      const ARTBOARD_VIEW_SIZE = parseInt(pageParameters.get('viewSize') || '960', 10);
       const INTERNAL_RENDER_SCALE = ARTBOARD_SIZE / ARTBOARD_VIEW_SIZE;
       const SOURCE_DURATION_SECONDS = 354.0;
       const NORMAL_PLAYBACK_RATE = 3.0;
@@ -181,37 +182,136 @@
       };
       // MyPaint brush per phase: [brushName, widthScale, alphaOverride|null, multiply]
       // [brushName, widthScale, alphaOverride|null, multiply, maxWidthPx]
-      const PHASE_BRUSHES = {
-        structure_line: ['shade', 2.1, 0.5, true, 10],
-        region_fill: ['marker', 1.35, null, false, 999],
-        region_glaze: ['marker', 1.35, null, false, 999],
-        refine_coat: ['dry_brush', 1.15, 0.85, false, 14],
-        hair_detail: ['textured_ink', 0.82, 0.82, false, 10],
-        detail_line: ['liner', 0.85, 0.8, true, 7.5],
-        focus_detail: ['liner', 0.9, 0.85, true, 7],
-        face_detail: ['liner', 0.72, 0.96, false, 4.2],
-        anime_refine_broad: ['marker', 0.90, 0.92, false, 14],
-        anime_refine_medium: ['dry_marker', 0.88, 0.92, false, 8],
-        anime_refine_detail: ['dry_brush', 0.82, 0.94, false, 4.2],
-        anime_refine_micro: ['liner', 0.78, 0.96, false, 2.2],
-        anime_refine_ultra: ['liner', 0.72, 0.97, false, 1.5],
-        anime_subject_detail: ['liner', 0.72, 0.97, false, 1.35],
-        anime_identity_detail: ['liner', 0.68, 0.98, false, 0.90],
-        anime_final_ink: ['liner', 0.76, 0.98, false, 5.2],
-        anime_identity_ink: ['liner', 0.68, 0.94, false, 3.8],
-        s_structure_optimization: ['liner', 0.72, 0.94, false, 1.20],
-        s_surface_optimization: ['liner', 0.70, 0.92, false, 0.90],
-        s_subject_optimization: ['liner', 0.68, 0.90, false, 0.70],
-        s_visual_anchor_optimization: ['liner', 0.68, 0.90, false, 0.65],
-        s_identity_optimization: ['liner', 0.66, 0.88, false, 0.55],
-        s_face_core_optimization: ['liner', 0.66, 0.90, false, 0.55],
-        person_clothes_polish: ['dry_brush', 0.88, 0.92, false, 0.90],
-        person_skin_polish: ['dry_brush', 0.94, 0.93, false, 1.25],
-        person_contour_reinforcement: ['liner', 0.76, 0.91, false, 0.76],
-        person_hair_polish: ['textured_ink', 0.76, 0.90, false, 0.72],
-        face_skin_polish: ['dry_brush', 0.92, 0.94, false, 1.45],
-        face_feature_structure: ['liner', 0.82, null, false, 1.35],
+      // Selectable brush styles: marker (default thick marker/liner), pencil
+      // (graphite sketch), ink (sumi/pen wash), airbrush (soft gradient spray).
+      const BRUSH_STYLES = {
+        marker: {
+          structure_line: ['shade', 2.1, 0.5, true, 10],
+          region_fill: ['marker', 1.35, null, false, 999],
+          region_glaze: ['marker', 1.35, null, false, 999],
+          refine_coat: ['dry_brush', 1.15, 0.85, false, 14],
+          hair_detail: ['textured_ink', 0.82, 0.82, false, 10],
+          detail_line: ['liner', 0.85, 0.8, true, 7.5],
+          focus_detail: ['liner', 0.9, 0.85, true, 7],
+          face_detail: ['liner', 0.72, 0.96, false, 4.2],
+          anime_refine_broad: ['marker', 0.90, 0.92, false, 14],
+          anime_refine_medium: ['dry_marker', 0.88, 0.92, false, 8],
+          anime_refine_detail: ['dry_brush', 0.82, 0.94, false, 4.2],
+          anime_refine_micro: ['liner', 0.78, 0.96, false, 2.2],
+          anime_refine_ultra: ['liner', 0.72, 0.97, false, 1.5],
+          anime_subject_detail: ['liner', 0.72, 0.97, false, 1.35],
+          anime_identity_detail: ['liner', 0.68, 0.98, false, 0.90],
+          anime_final_ink: ['liner', 0.76, 0.98, false, 5.2],
+          anime_identity_ink: ['liner', 0.68, 0.94, false, 3.8],
+          s_structure_optimization: ['liner', 0.72, 0.94, false, 1.20],
+          s_surface_optimization: ['liner', 0.70, 0.92, false, 0.90],
+          s_subject_optimization: ['liner', 0.68, 0.90, false, 0.70],
+          s_visual_anchor_optimization: ['liner', 0.68, 0.90, false, 0.65],
+          s_identity_optimization: ['liner', 0.66, 0.88, false, 0.55],
+          s_face_core_optimization: ['liner', 0.66, 0.90, false, 0.55],
+          person_clothes_polish: ['dry_brush', 0.88, 0.92, false, 0.90],
+          person_skin_polish: ['dry_brush', 0.94, 0.93, false, 1.25],
+          person_contour_reinforcement: ['liner', 0.76, 0.91, false, 0.76],
+          person_hair_polish: ['textured_ink', 0.76, 0.90, false, 0.72],
+          face_skin_polish: ['dry_brush', 0.92, 0.94, false, 1.45],
+          face_feature_structure: ['liner', 0.82, null, false, 1.35],
+        },
+        pencil: {
+          structure_line: ['hard_blot', 1.7, 0.5, true, 8],
+          region_fill: ['coarse_bulk_1', 1.25, null, false, 999],
+          region_glaze: ['coarse_bulk_2', 1.25, null, false, 999],
+          refine_coat: ['coarse_bulk_3', 1.1, 0.85, false, 12],
+          hair_detail: ['fur', 0.9, 0.82, false, 9],
+          detail_line: ['shade', 0.85, 0.8, true, 6],
+          focus_detail: ['shade', 0.9, 0.85, true, 5.5],
+          face_detail: ['shade', 0.75, 0.96, false, 4],
+          anime_refine_broad: ['coarse_bulk_1', 0.9, 0.92, false, 12],
+          anime_refine_medium: ['hard_blot', 0.88, 0.92, false, 7],
+          anime_refine_detail: ['small_blot', 0.85, 0.94, false, 4],
+          anime_refine_micro: ['shade', 0.8, 0.96, false, 2],
+          anime_refine_ultra: ['shade', 0.75, 0.97, false, 1.4],
+          anime_subject_detail: ['shade', 0.75, 0.97, false, 1.3],
+          anime_identity_detail: ['shade', 0.7, 0.98, false, 0.9],
+          anime_final_ink: ['liner', 0.78, 0.98, false, 5],
+          anime_identity_ink: ['liner', 0.7, 0.94, false, 3.5],
+          s_structure_optimization: ['shade', 0.74, 0.94, false, 1.2],
+          s_surface_optimization: ['shade', 0.72, 0.92, false, 0.9],
+          s_subject_optimization: ['shade', 0.7, 0.90, false, 0.7],
+          s_visual_anchor_optimization: ['shade', 0.7, 0.90, false, 0.65],
+          s_identity_optimization: ['shade', 0.68, 0.88, false, 0.55],
+          s_face_core_optimization: ['shade', 0.68, 0.90, false, 0.55],
+          person_clothes_polish: ['hard_blot', 0.9, 0.92, false, 0.9],
+          person_skin_polish: ['small_blot', 0.95, 0.93, false, 1.25],
+          person_contour_reinforcement: ['shade', 0.78, 0.91, false, 0.76],
+          person_hair_polish: ['fur', 0.78, 0.90, false, 0.72],
+          face_skin_polish: ['small_blot', 0.93, 0.94, false, 1.45],
+          face_feature_structure: ['shade', 0.84, null, false, 1.35],
+        },
+        ink: {
+          structure_line: ['ink_blot', 1.9, 0.5, true, 9],
+          region_fill: ['irregular_ink', 1.3, null, false, 999],
+          region_glaze: ['textured_ink', 1.3, null, false, 999],
+          refine_coat: ['ink_blot', 1.1, 0.85, false, 12],
+          hair_detail: ['irregular_ink', 0.85, 0.82, false, 8],
+          detail_line: ['liner', 0.85, 0.8, true, 7.5],
+          focus_detail: ['liner', 0.9, 0.85, true, 7],
+          face_detail: ['liner', 0.72, 0.96, false, 4.2],
+          anime_refine_broad: ['ink_blot', 0.92, 0.92, false, 12],
+          anime_refine_medium: ['irregular_ink', 0.88, 0.92, false, 7],
+          anime_refine_detail: ['textured_ink', 0.84, 0.94, false, 4],
+          anime_refine_micro: ['liner', 0.78, 0.96, false, 2],
+          anime_refine_ultra: ['liner', 0.72, 0.97, false, 1.4],
+          anime_subject_detail: ['liner', 0.72, 0.97, false, 1.3],
+          anime_identity_detail: ['liner', 0.68, 0.98, false, 0.9],
+          anime_final_ink: ['liner', 0.76, 0.98, false, 5.2],
+          anime_identity_ink: ['liner', 0.68, 0.94, false, 3.8],
+          s_structure_optimization: ['liner', 0.72, 0.94, false, 1.2],
+          s_surface_optimization: ['liner', 0.70, 0.92, false, 0.9],
+          s_subject_optimization: ['liner', 0.68, 0.90, false, 0.7],
+          s_visual_anchor_optimization: ['liner', 0.68, 0.90, false, 0.65],
+          s_identity_optimization: ['liner', 0.66, 0.88, false, 0.55],
+          s_face_core_optimization: ['liner', 0.66, 0.90, false, 0.55],
+          person_clothes_polish: ['ink_blot', 0.9, 0.92, false, 0.9],
+          person_skin_polish: ['textured_ink', 0.95, 0.93, false, 1.25],
+          person_contour_reinforcement: ['liner', 0.76, 0.91, false, 0.76],
+          person_hair_polish: ['irregular_ink', 0.78, 0.90, false, 0.72],
+          face_skin_polish: ['ink_blot', 0.93, 0.94, false, 1.45],
+          face_feature_structure: ['liner', 0.82, null, false, 1.35],
+        },
+        airbrush: {
+          structure_line: ['airbrush_a', 2.2, 0.5, true, 12],
+          region_fill: ['big_airbrush', 1.4, null, false, 999],
+          region_glaze: ['airbrush_a', 1.4, null, false, 999],
+          refine_coat: ['soft', 1.2, 0.85, false, 14],
+          hair_detail: ['soft', 0.95, 0.82, false, 10],
+          detail_line: ['liner', 0.85, 0.8, true, 6.5],
+          focus_detail: ['liner', 0.9, 0.85, true, 6],
+          face_detail: ['liner', 0.72, 0.96, false, 4],
+          anime_refine_broad: ['big_airbrush', 0.95, 0.92, false, 14],
+          anime_refine_medium: ['airbrush_a', 0.9, 0.92, false, 8],
+          anime_refine_detail: ['soft', 0.88, 0.94, false, 4],
+          anime_refine_micro: ['airbrush_a', 0.8, 0.96, false, 2.2],
+          anime_refine_ultra: ['soft', 0.75, 0.97, false, 1.5],
+          anime_subject_detail: ['airbrush_a', 0.75, 0.97, false, 1.35],
+          anime_identity_detail: ['soft', 0.7, 0.98, false, 0.9],
+          anime_final_ink: ['liner', 0.76, 0.98, false, 5],
+          anime_identity_ink: ['liner', 0.68, 0.94, false, 3.5],
+          s_structure_optimization: ['airbrush_a', 0.75, 0.94, false, 1.2],
+          s_surface_optimization: ['soft', 0.73, 0.92, false, 0.9],
+          s_subject_optimization: ['airbrush_a', 0.71, 0.90, false, 0.7],
+          s_visual_anchor_optimization: ['soft', 0.71, 0.90, false, 0.65],
+          s_identity_optimization: ['airbrush_a', 0.69, 0.88, false, 0.55],
+          s_face_core_optimization: ['soft', 0.69, 0.90, false, 0.55],
+          person_clothes_polish: ['soft', 0.92, 0.92, false, 0.9],
+          person_skin_polish: ['big_airbrush', 0.98, 0.93, false, 1.25],
+          person_contour_reinforcement: ['liner', 0.76, 0.91, false, 0.76],
+          person_hair_polish: ['soft', 0.8, 0.90, false, 0.72],
+          face_skin_polish: ['big_airbrush', 0.96, 0.94, false, 1.45],
+          face_feature_structure: ['liner', 0.82, null, false, 1.35],
+        },
       };
+      const brushStyleName = pageParameters.get('brushStyle') || 'marker';
+      const PHASE_BRUSHES = BRUSH_STYLES[brushStyleName] || BRUSH_STYLES.marker;
       const WIDE_FILL_BRUSH_PX = Infinity; // dry_marker texture disabled: coverage first
 
       const videoFrame = document.getElementById('video-frame');
@@ -220,9 +320,28 @@
       const refineCanvas = document.getElementById('refine');
       const activeCanvas = document.getElementById('active-strokes');
       const referenceCard = document.getElementById('reference-card');
-      const pageParameters = new URLSearchParams(window.location.search);
       const referenceAssetPath = pageParameters.get('reference');
       if (referenceAssetPath) referenceCard.src = referenceAssetPath;
+      // --- Dynamic stage / canvas sizing (supports 9:16 Douyin, 3:4, etc.)
+      videoFrame.style.width = `${STAGE_WIDTH}px`;
+      videoFrame.style.height = `${STAGE_HEIGHT}px`;
+      stageCanvas.width = STAGE_WIDTH;
+      stageCanvas.height = STAGE_HEIGHT;
+      artCanvas.width = ARTBOARD_SIZE;
+      artCanvas.height = ARTBOARD_SIZE;
+      refineCanvas.width = ARTBOARD_SIZE;
+      refineCanvas.height = ARTBOARD_SIZE;
+      activeCanvas.width = ARTBOARD_SIZE;
+      activeCanvas.height = ARTBOARD_SIZE;
+      const artViewport = document.getElementById('art-viewport');
+      artViewport.style.width = `${ARTBOARD_VIEW_SIZE}px`;
+      artViewport.style.height = `${ARTBOARD_VIEW_SIZE}px`;
+      artViewport.style.top = `${Math.max(24, Math.round(STAGE_HEIGHT * 0.27))}px`;
+      artViewport.style.left = `${Math.max(24, Math.round((STAGE_WIDTH - ARTBOARD_VIEW_SIZE) / 2))}px`;
+      for (const canvasElement of [artCanvas, refineCanvas, activeCanvas]) {
+        canvasElement.style.width = `${ARTBOARD_VIEW_SIZE}px`;
+        canvasElement.style.height = `${ARTBOARD_VIEW_SIZE}px`;
+      }
       const planScriptPath = pageParameters.get('plan') || 'assets/marker-paint-plan-s.js';
       await new Promise((resolve, reject) => {
         const planScript = document.createElement('script');

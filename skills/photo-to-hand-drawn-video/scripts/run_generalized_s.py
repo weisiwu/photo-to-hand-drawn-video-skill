@@ -27,9 +27,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--run-dir", required=True, type=Path)
     parser.add_argument(
         "--subject-type",
-        choices=("auto", "human", "animal"),
+        choices=("auto", "human", "animal", "anime"),
         default="auto",
-        help="Use MediaPipe for a person or the central companion-animal adapter.",
+        help="Use MediaPipe for a person, the central companion-animal adapter, "
+        "or the hair-mask anime adapter for stylized 2D illustrations.",
     )
     parser.add_argument("--attempt", type=int, default=0, choices=(0, 1, 2))
     parser.add_argument("--budget-scale", type=float, default=2.0)
@@ -37,6 +38,36 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--duration", type=float, default=64.03)
     parser.add_argument("--fps", type=int, default=25)
     parser.add_argument("--music", type=Path)
+    parser.add_argument(
+        "--stage-width",
+        type=int,
+        default=1080,
+        help="Output video width in px (1080 for 3:4 portrait, 1080 for 9:16 Douyin).",
+    )
+    parser.add_argument(
+        "--stage-height",
+        type=int,
+        default=1440,
+        help="Output video height in px (1440 for 3:4 portrait, 1920 for 9:16 Douyin).",
+    )
+    parser.add_argument(
+        "--artboard-size",
+        type=int,
+        default=3840,
+        help="Internal supersampled render canvas edge (3840 default, 2880 legacy).",
+    )
+    parser.add_argument(
+        "--view-size",
+        type=int,
+        default=960,
+        help="On-screen artboard size in px (960 default; 1080 fills a 1080-wide Douyin frame).",
+    )
+    parser.add_argument(
+        "--brush-style",
+        choices=("marker", "pencil", "ink", "airbrush"),
+        default="marker",
+        help="Brush style: marker (default), pencil (graphite), ink (sumi wash), airbrush.",
+    )
     parser.add_argument("--skip-video-validation", action="store_true")
     return parser.parse_args()
 
@@ -76,6 +107,24 @@ def run_semantic_preflight(
     attempt: int,
 ) -> tuple[int, dict]:
     report_path = run_directory / "semantic-preflight.json"
+
+    if subject_type == "anime":
+        anime_exit_code = run_command(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "semantic_preflight_anime.py"),
+                "--reference",
+                str(reference_path),
+                "--target",
+                str(target_path),
+                "--output-dir",
+                str(run_directory),
+                "--attempt",
+                str(attempt),
+            ],
+            accepted_exit_codes={0, 2, 3},
+        )
+        return anime_exit_code, json.loads(report_path.read_text(encoding="utf-8"))
 
     if subject_type in {"auto", "human"}:
         human_exit_code = run_command(
@@ -200,6 +249,11 @@ def main() -> int:
             "reference": project_relative_url(staged_reference),
             "plan": project_relative_url(final_plan_javascript),
             "planGlobal": "MARKER_PAINT_PLAN_GENERALIZED",
+            "stageW": arguments.stage_width,
+            "stageH": arguments.stage_height,
+            "artboard": arguments.artboard_size,
+            "viewSize": arguments.view_size,
+            "brushStyle": arguments.brush_style,
         }
     )
     raw_video = run_directory / "generalized-s-raw.mp4"
@@ -224,6 +278,8 @@ def main() -> int:
                 str(RENDERER_HTML),
                 f"--duration={arguments.duration}",
                 f"--fps={arguments.fps}",
+                f"--width={arguments.stage_width}",
+                f"--height={arguments.stage_height}",
                 f"--query={renderer_query}",
                 f"--output={raw_video}",
             ],
@@ -265,6 +321,9 @@ def main() -> int:
     validation_report = None
     if arguments.render and not arguments.skip_video_validation:
         validation_report = run_directory / "video-validation.json"
+        view_left = max(24, (arguments.stage_width - arguments.view_size) // 2)
+        view_top = max(24, round(arguments.stage_height * 0.27))
+        validation_crop = f"{view_left},{view_top},{arguments.view_size},{arguments.view_size}"
         run_command(
             [
                 sys.executable,
@@ -272,7 +331,7 @@ def main() -> int:
                 "--video",
                 str(final_video),
                 "--crop",
-                "60,390,960,960",
+                validation_crop,
                 "--target",
                 str(staged_target),
                 "--frame-step",
@@ -288,6 +347,8 @@ def main() -> int:
         "contract": preflight.get("contract"),
         "subjectType": "animal"
         if preflight.get("contract") == "single-companion-animal-photo-v1"
+        else "anime"
+        if preflight.get("contract") == "single-person-anime-photo-v1"
         else "human",
         "attempt": arguments.attempt,
         "budgetScale": arguments.budget_scale,
