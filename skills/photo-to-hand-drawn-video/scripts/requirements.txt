@@ -1,0 +1,9 @@
+# Isolated runtime for semantic preflight and generalized planning.
+# Install with:
+#   UV_CACHE_DIR=/private/tmp/marker-drawing-uv-cache uv pip install \
+#     --python .venv-generalization/bin/python -r requirements-generalization.txt
+mediapipe==0.10.21
+numpy==1.26.4
+pillow==12.3.0
+scikit-image==0.25.2
+scipy==1.14.1
