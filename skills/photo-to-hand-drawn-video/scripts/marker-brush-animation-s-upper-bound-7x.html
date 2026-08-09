@@ -1029,6 +1029,13 @@
       }
 
       function updateCamera(playbackTimeSeconds) {
+        // Fixed camera (user requirement): the artboard never zooms or pans
+        // from start to finish — viewers see the whole sheet at constant size.
+        window.__cameraState = { scale: 1, focusX: 0.5, focusY: 0.5 };
+        artCanvas.style.transform = 'matrix(1,0,0,1,0,0)';
+        refineCanvas.style.transform = 'matrix(1,0,0,1,0,0)';
+        activeCanvas.style.transform = 'matrix(1,0,0,1,0,0)';
+        return;
         const faceCenter = regionCenter(strokePlan.focusRegions?.face, 0.555, 0.28);
         const upperBodyCenter = regionCenter(strokePlan.focusRegions?.upperBody, 0.5, 0.46);
         const safeFaceFocusY = Math.max(0.35, faceCenter.y);

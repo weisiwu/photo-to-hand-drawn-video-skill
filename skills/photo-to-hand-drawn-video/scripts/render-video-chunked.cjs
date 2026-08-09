@@ -61,6 +61,39 @@ async function launchBrowser() {
   }
 }
 
+async function setupVirtualServer(page, rootDirectory) {
+  // Serve local files for http://127.0.0.1:8765/* requests via Playwright
+  // route interception — replaces the flaky python http.server entirely
+  // (the Emscripten brushlib still needs an http origin for its wasm XHR).
+  await page.route('http://127.0.0.1:8765/**', async route => {
+    try {
+      const url = new URL(route.request().url());
+      const filePath = path.join(rootDirectory, decodeURIComponent(url.pathname));
+      if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+        const body = fs.readFileSync(filePath);
+        const mimeTypes = {
+          '.html': 'text/html',
+          '.js': 'text/javascript',
+          '.mjs': 'text/javascript',
+          '.wasm': 'application/wasm',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.png': 'image/png',
+          '.webp': 'image/webp',
+          '.json': 'application/json',
+        };
+        const contentType = mimeTypes[path.extname(filePath).toLowerCase()]
+          || 'application/octet-stream';
+        await route.fulfill({ status: 200, contentType, body });
+        return;
+      }
+      await route.fulfill({ status: 404, body: 'not found' });
+    } catch (error) {
+      await route.continue();
+    }
+  });
+}
+
 async function renderFrameChunk(htmlFile, options, frameDirectory, firstFrame, frameLimit) {
   const browser = await launchBrowser();
   try {
@@ -68,6 +101,7 @@ async function renderFrameChunk(htmlFile, options, frameDirectory, firstFrame, f
       viewport: { width: options.width, height: options.height },
       deviceScaleFactor: 1,
     });
+    await setupVirtualServer(page, process.cwd());
     const pageUrl = htmlFile.startsWith('http')
       ? `${htmlFile}${options.query ? `?${options.query}` : ''}`
       : `file://${htmlFile}${options.query ? `?${options.query}` : ''}`;

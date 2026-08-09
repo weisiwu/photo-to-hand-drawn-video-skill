@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Two-layer compositing: draw a smooth continuous brush cursor over the
-brush-free base video using the exported brush trajectory.
+"""Two-layer compositing for the hand-drawn video pipeline.
 
-The trajectory recorded per video frame jumps between strokes (the tip snaps
-to the next stroke start). A moving-average smoothing window turns those
-jumps into slow, continuous glides — the cursor is always visible, never
-blinks, never shakes.
+Pipeline (user-approved): render the brush-free fill video first, then
+derive the brush rhythm FROM THE VIDEO (frame-to-frame changes inside the
+paper region = where the hand is actually drawing), then draw a smooth
+continuous cursor and composite. The cursor follows the real drawing pace:
+it only moves when the picture changes.
+
+Modes:
+- analyze (default): derive cursor positions from frame diffs of the base
+  video. No plan/trace needed — works with any fixed-camera base video.
+- trace: use an exported brush-trace.json instead (older mode).
+
+Output is H.264 via ffmpeg pipe (cv2 mp4v is not playable on macOS).
 
 Usage:
-  compose_brush.py --base base.mp4 --trace brush-trace.json --output out.mp4
+  compose_brush.py --base base.mp4 --output final.mp4 [--paper "0,518,1080,1080"]
 """
 import argparse
 import json
@@ -20,74 +27,126 @@ import numpy as np
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", required=True, help="Brush-free base video (1080x1920).")
-    parser.add_argument("--trace", required=True, help="brush-trace.json from the renderer.")
+    parser.add_argument("--base", required=True, help="Brush-free base video.")
     parser.add_argument("--output", required=True, help="Composited video path.")
-    parser.add_argument("--smooth", type=int, default=7,
-                        help="Moving-average window in frames (higher = slower, "
-                             "smoother cursor motion).")
+    parser.add_argument("--trace", default=None,
+                        help="Optional brush-trace.json (older mode; default is frame-diff analysis).")
+    parser.add_argument("--paper", default="0,518,1080,1080",
+                        help="Paper region 'left,top,width,height' in video px "
+                             "(where drawing changes are detected).")
+    parser.add_argument("--smooth", type=int, default=3,
+                        help="Moving-average window in frames.")
+    parser.add_argument("--diff-threshold", type=int, default=16,
+                        help="Per-pixel abs-diff sum threshold for 'changed'.")
+    parser.add_argument("--min-changed", type=int, default=40,
+                        help="Minimum changed pixels to count as an active stroke.")
     parser.add_argument("--fps", type=float, default=None,
-                        help="Video fps (auto-detected from the trace when omitted).")
+                        help="Video fps (auto-detected when omitted).")
     return parser.parse_args()
 
 
 def draw_brush(frame: np.ndarray, x: float, y: float) -> None:
     """Round brush nib: dark tip, amber body, white outline."""
     center = (int(round(x)), int(round(y)))
-    cv2.circle(frame, center, 24, (245, 245, 245), -1)      # white base
-    cv2.circle(frame, center, 20, (7, 119, 217), -1)        # amber body (#d97706)
-    cv2.circle(frame, center, 8, (18, 45, 124), -1)         # dark nib (#7c2d12)
-    cv2.circle(frame, center, 24, (90, 90, 90), 2)          # soft outline
+    cv2.circle(frame, center, 24, (245, 245, 245), -1)
+    cv2.circle(frame, center, 20, (7, 119, 217), -1)
+    cv2.circle(frame, center, 8, (18, 45, 124), -1)
+    cv2.circle(frame, center, 24, (90, 90, 90), 2)
+
+
+def smooth_jumps(xs: np.ndarray, ys: np.ndarray, threshold: float = 60.0,
+                 transition: int = 5) -> tuple[np.ndarray, np.ndarray]:
+    """Replace stroke-to-stroke teleports with short linear glides."""
+    n = len(xs)
+    for i in range(1, n):
+        distance = float(np.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]))
+        if distance > threshold:
+            start = max(0, i - transition)
+            end = min(n - 1, i + transition)
+            if end - start >= 2:
+                for j in range(start + 1, end):
+                    fraction = (j - start) / (end - start)
+                    xs[j] = xs[start] + (xs[end] - xs[start]) * fraction
+                    ys[j] = ys[start] + (ys[end] - ys[start]) * fraction
+    return xs, ys
+
+
+def analyze_brush_rhythm(base_path: str, paper: tuple[int, int, int, int],
+                         diff_threshold: int, min_changed: int) -> list:
+    """Frame-to-frame diff inside the paper region -> cursor positions."""
+    left, top, width, height = paper
+    cap = cv2.VideoCapture(base_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    positions: list[tuple[float, float] | None] = []
+    previous = None
+    frame_index = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if previous is not None:
+            current_crop = frame[top:top + height, left:left + width].astype(np.int16)
+            previous_crop = previous[top:top + height, left:left + width].astype(np.int16)
+            diff = np.abs(current_crop - previous_crop).sum(axis=2)
+            mask = diff > diff_threshold
+            changed = int(mask.sum())
+            if changed >= min_changed:
+                weights = diff[mask].astype(np.float64)
+                ys, xs = np.where(mask)
+                centroid_x = float((xs * weights).sum() / weights.sum()) + left
+                centroid_y = float((ys * weights).sum() / weights.sum()) + top
+                positions.append((centroid_x, centroid_y))
+            else:
+                positions.append(None)
+        else:
+            positions.append(None)
+        previous = frame
+        frame_index += 1
+        if frame_index % 128 == 0:
+            print(f"  analyze {frame_index}/{total}")
+    cap.release()
+    return positions, fps
 
 
 def main() -> int:
     arguments = parse_arguments()
-    trace = json.load(open(arguments.trace, encoding="utf-8"))
-    if not trace:
-        print("empty trace")
-        return 1
+    paper = tuple(int(v) for v in arguments.paper.split(","))
 
-    frame_times = [entry["t"] for entry in trace]
-    if arguments.fps is None:
-        gaps = [b - a for a, b in zip(frame_times, frame_times[1:]) if b > a]
-        fps = round(1.0 / (sum(gaps) / len(gaps))) if gaps else 8.0
+    if arguments.trace:
+        trace = json.load(open(arguments.trace, encoding="utf-8"))
+        trace_t = np.array([entry["t"] for entry in trace], dtype=np.float64)
+        raw_x = np.array([entry["x"] for entry in trace], dtype=np.float64)
+        raw_y = np.array([entry["y"] for entry in trace], dtype=np.float64)
+        valid = raw_x >= 0
+        indices = np.arange(len(trace))
+        x = np.interp(indices, indices[valid], raw_x[valid]) if valid.any() else raw_x
+        y = np.interp(indices, indices[valid], raw_y[valid]) if valid.any() else raw_y
+        fps = arguments.fps or (round(1.0 / np.median(np.diff(trace_t))) if len(trace_t) > 2 else 8.0)
     else:
-        fps = arguments.fps
-    print(f"fps={fps} trace_points={len(trace)}")
+        # Rhythm from the video itself: where the picture changed, the hand was.
+        positions, fps = analyze_brush_rhythm(
+            arguments.base, paper, arguments.diff_threshold, arguments.min_changed
+        )
+        n = len(positions)
+        trace_t = np.arange(n) / fps
+        x = np.full(n, np.nan, dtype=np.float64)
+        y = np.full(n, np.nan, dtype=np.float64)
+        for i, position in enumerate(positions):
+            if position is not None:
+                x[i], y[i] = position
+        valid = ~np.isnan(x)
+        if not valid.any():
+            print("no drawing changes detected — is --paper correct?")
+            return 1
+        indices = np.arange(n)
+        x = np.interp(indices, indices[valid], x[valid])
+        y = np.interp(indices, indices[valid], y[valid])
+        fps = arguments.fps or fps
 
-    raw_x = np.array([entry["x"] for entry in trace], dtype=np.float64)
-    raw_y = np.array([entry["y"] for entry in trace], dtype=np.float64)
-    valid = raw_x >= 0
-
-    # Interpolate missing points (x=-1 gaps) from neighbours so the cursor
-    # glides instead of disappearing between strokes.
-    indices = np.arange(len(trace))
-    x = np.interp(indices, indices[valid], raw_x[valid]) if valid.any() else raw_x
-    y = np.interp(indices, indices[valid], raw_y[valid]) if valid.any() else raw_y
-
-    # Stroke-to-stroke snaps: the raw tip jumps to the next stroke start.
-    # Replace each jump with a short linear glide (transition frames) so the
-    # cursor travels smoothly instead of teleporting — low-frequency motion.
-    def smooth_jumps(xs, ys, threshold=40.0, transition=5):
-        n = len(xs)
-        for i in range(1, n):
-            if i - 1 < 0:
-                continue
-            distance = float(np.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]))
-            if distance > threshold:
-                start = max(0, i - transition)
-                end = min(n - 1, i + transition)
-                if end - start >= 2:
-                    for j in range(start + 1, end):
-                        fraction = (j - start) / (end - start)
-                        xs[j] = xs[start] + (xs[end] - xs[start]) * fraction
-                        ys[j] = ys[start] + (ys[end] - ys[start]) * fraction
-        return xs, ys
+    print(f"fps={fps:.2f} points={len(x)}")
 
     x, y = smooth_jumps(x, y)
-
-    # Light moving-average smoothing (keeps the remaining micro-jitter out
-    # without lagging the hand noticeably).
     window = max(1, arguments.smooth)
     kernel = np.ones(window) / window
     x = np.convolve(x, kernel, mode="same")
@@ -97,22 +156,13 @@ def main() -> int:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    # Encode with ffmpeg/libx264 (H.264) — cv2's mp4v (MPEG-4 Part 2) is not
-    # playable by QuickTime/browsers on macOS.
     encoder = subprocess.Popen(
         [
-            "ffmpeg",
-            "-y",
-            "-loglevel", "error",
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "-s", f"{width}x{height}",
-            "-r", str(fps),
-            "-i", "-",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-crf", "18",
-            "-preset", "medium",
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{width}x{height}", "-r", f"{fps:.3f}", "-i", "-",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-crf", "18", "-preset", "medium",
             arguments.output,
         ],
         stdin=subprocess.PIPE,
@@ -124,11 +174,11 @@ def main() -> int:
         if not ok:
             break
         time_seconds = frame_index / fps
-        trace_position = int(round(time_seconds / max(1e-6, frame_times[1] - frame_times[0]))) \
-            if len(frame_times) > 1 else frame_index
-        trace_position = min(trace_position, len(trace) - 1)
-        if valid[trace_position]:
-            draw_brush(frame, x[trace_position], y[trace_position])
+        # Time-accurate lookup (interpolate), never an index arithmetic guess:
+        # trace timestamps may mix rAF and seek samples.
+        position_x = float(np.interp(time_seconds, trace_t, x))
+        position_y = float(np.interp(time_seconds, trace_t, y))
+        draw_brush(frame, position_x, position_y)
         encoder.stdin.write(frame.tobytes())
         frame_index += 1
         if frame_index % 64 == 0:
