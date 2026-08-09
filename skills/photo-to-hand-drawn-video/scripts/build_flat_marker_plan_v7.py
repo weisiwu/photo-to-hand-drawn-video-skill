@@ -964,7 +964,9 @@ def collect_fill_regions(
                     "eccentricity": float(component.eccentricity),
                 }
             )
-    fill_regions.sort(key=lambda region: (-region["luminance"], -region["area"]))
+    fill_regions.sort(
+        key=lambda region: (region["bbox"][0], region["bbox"][1])
+    )
     return fill_regions, small_dark_features
 
 

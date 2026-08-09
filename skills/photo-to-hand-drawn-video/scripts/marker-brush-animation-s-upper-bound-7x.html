@@ -1081,11 +1081,31 @@
         const appreciationFaceStartSeconds = playbackTimeForSourceTime(339);
         const appreciationPanStartSeconds = playbackTimeForSourceTime(344);
         const appreciationReturnStartSeconds = playbackTimeForSourceTime(349);
+        const fillStartSeconds = playbackTimeForSourceTime(PHASE_WINDOWS.region_fill.startSeconds);
+        const fillEndSeconds = playbackTimeForSourceTime(PHASE_WINDOWS.region_fill.endSeconds);
         let cameraState = fullCanvasState;
 
-        if (playbackTimeSeconds < earlySubjectStartSeconds) {
-          cameraState = fullCanvasState;
-        } else if (playbackTimeSeconds < earlySubjectStartSeconds + transitionPlaybackSeconds) {
+        // Region-fill phase: the camera follows the brush so the viewer sees
+        // each area get filled in sequence (architecture first, then fills).
+        const fillFollowing = playbackTimeSeconds >= fillStartSeconds
+          && playbackTimeSeconds < fillEndSeconds
+          && window.__activeTip;
+        if (fillFollowing) {
+          if (!window.__cameraFollow) {
+            window.__cameraFollow = { x: window.__activeTip.x, y: window.__activeTip.y };
+          }
+          window.__cameraFollow.x += (window.__activeTip.x - window.__cameraFollow.x) * 0.10;
+          window.__cameraFollow.y += (window.__activeTip.y - window.__cameraFollow.y) * 0.10;
+          cameraState = {
+            scale: 1.35,
+            focusX: window.__cameraFollow.x,
+            focusY: window.__cameraFollow.y,
+          };
+        } else {
+          window.__cameraFollow = null;
+          if (playbackTimeSeconds < earlySubjectStartSeconds) {
+            cameraState = fullCanvasState;
+          } else if (playbackTimeSeconds < earlySubjectStartSeconds + transitionPlaybackSeconds) {
           cameraState = interpolateCameraState(
             fullCanvasState,
             upperBodyState,
@@ -1167,6 +1187,7 @@
               / (VIDEO_DURATION_SECONDS - appreciationReturnStartSeconds),
           );
         }
+        }
         const translateX = ARTBOARD_VIEW_SIZE * 0.5
           - cameraState.scale * cameraState.focusX * ARTBOARD_VIEW_SIZE;
         const translateY = ARTBOARD_VIEW_SIZE * 0.5
@@ -1208,6 +1229,9 @@
         activeContext.clearRect(0, 0, ARTBOARD_SIZE, ARTBOARD_SIZE);
         window.__cursorDebug = null;
         const rawBrushTipState = tipState || recentCompletedStrokeTipState();
+        window.__activeTip = rawBrushTipState && rawBrushTipState.tip
+          ? { x: rawBrushTipState.tip.x / ARTBOARD_SIZE, y: rawBrushTipState.tip.y / ARTBOARD_SIZE }
+          : null;
         const shouldShowBrushIcon = currentTimeSeconds >= 2
           && currentTimeSeconds < DRAWING_END_SECONDS;
         if (shouldShowBrushIcon && rawBrushTipState) {

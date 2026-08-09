@@ -254,6 +254,68 @@ def main() -> int:
                         ),
                     ] = True
                     save_mask(arguments.output_dir / "target-hair.png", hair_mask)
+                    # Rebuild subject/clothes/skin masks from the mapped face so
+                    # refinement and polish stages have regions to work with
+                    # (MediaPipe segmentation fails on upscaled anime crops).
+                    subject_mask = np.zeros((target_height, target_width), dtype=bool)
+                    subject_top = max(0, face_bounds_px["top"] - round(face_bounds_px["height"] * 0.35))
+                    subject_left = max(0, face_bounds_px["left"] - round(face_bounds_px["width"] * 0.9))
+                    subject_right = min(target_width, face_bounds_px["right"] + round(face_bounds_px["width"] * 0.9))
+                    subject_bottom = target_height
+                    subject_mask[subject_top:subject_bottom, subject_left:subject_right] = True
+                    # Shave the rectangle toward the painted subject: keep the
+                    # central vertical band wide, narrow toward the bottom.
+                    taper = np.ones(target_height, dtype=np.float32)
+                    body_start = face_bounds_px["bottom"]
+                    for y in range(body_start, target_height):
+                        fraction = (y - body_start) / max(1, target_height - body_start)
+                        taper[y] = max(0.30, 1.0 - fraction * 0.75)
+                    for y in range(subject_top, target_height):
+                        half_width = int((subject_right - subject_left) / 2 * taper[y])
+                        center = (subject_left + subject_right) // 2
+                        subject_mask[y, max(0, center - half_width):min(target_width, center + half_width)] = True
+                    save_mask(arguments.output_dir / "target-subject.png", subject_mask)
+                    clothes_top = min(target_height - 1, face_bounds_px["bottom"] + round(face_bounds_px["height"] * 0.1))
+                    clothes_mask = np.zeros((target_height, target_width), dtype=bool)
+                    clothes_mask[clothes_top:target_height, :] = subject_mask[clothes_top:target_height, :]
+                    save_mask(arguments.output_dir / "target-clothes.png", clothes_mask)
+                    body_skin_mask = np.zeros((target_height, target_width), dtype=bool)
+                    body_skin_top = face_bounds_px["bottom"]
+                    body_skin_bottom = min(target_height - 1, clothes_top)
+                    if body_skin_bottom > body_skin_top:
+                        body_skin_mask[body_skin_top:body_skin_bottom, :] = subject_mask[body_skin_top:body_skin_bottom, :]
+                    save_mask(arguments.output_dir / "target-body_skin.png", body_skin_mask)
+                    face_skin_mask = face_mask_from_bounds(
+                        Bounds(
+                            face_bounds_px["left"] + round(face_bounds_px["width"] * 0.12),
+                            face_bounds_px["top"] + round(face_bounds_px["height"] * 0.18),
+                            face_bounds_px["right"] - round(face_bounds_px["width"] * 0.12),
+                            face_bounds_px["bottom"] - round(face_bounds_px["height"] * 0.08),
+                        ),
+                        target_width,
+                        target_height,
+                    )
+                    save_mask(arguments.output_dir / "target-face_skin.png", face_skin_mask)
+                    subject_bounds = {
+                        "left": subject_left,
+                        "top": subject_top,
+                        "right": subject_right,
+                        "bottom": target_height,
+                        "width": subject_right - subject_left,
+                        "height": target_height - subject_top,
+                    }
+                    target["bounds"]["subject"] = {
+                        "pixels": subject_bounds,
+                        "normalized": {
+                            "left": round(subject_left / target_width, 6),
+                            "top": round(subject_top / target_height, 6),
+                            "right": round(subject_right / target_width, 6),
+                            "bottom": 1.0,
+                            "width": round((subject_right - subject_left) / target_width, 6),
+                            "height": round((target_height - subject_top) / target_height, 6),
+                        },
+                    }
+                    target["subjectCoverage"] = round(float(subject_mask.mean()), 6)
                     identity_bounds = face_bounds_px
                     target["bounds"]["identity"] = {
                         "pixels": identity_bounds,
