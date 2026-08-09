@@ -42,7 +42,7 @@ function parseArguments() {
     const outputMatch = flag.match(/^--output=(.+)$/);
     if (outputMatch) options.outputFile = path.resolve(outputMatch[1]);
   }
-  return { htmlFile: path.resolve(htmlArgument), options };
+  return { htmlFile: htmlArgument.startsWith('http') ? htmlArgument : path.resolve(htmlArgument), options };
 }
 
 async function launchBrowser() {
@@ -68,7 +68,9 @@ async function renderFrameChunk(htmlFile, options, frameDirectory, firstFrame, f
       viewport: { width: options.width, height: options.height },
       deviceScaleFactor: 1,
     });
-    const pageUrl = `file://${htmlFile}${options.query ? `?${options.query}` : ''}`;
+    const pageUrl = htmlFile.startsWith('http')
+      ? `${htmlFile}${options.query ? `?${options.query}` : ''}`
+      : `file://${htmlFile}${options.query ? `?${options.query}` : ''}`;
     await page.goto(pageUrl);
     await page.waitForFunction('window.__ready === true', null, { timeout: 20000 });
     await page.evaluate(() => window.__pause());

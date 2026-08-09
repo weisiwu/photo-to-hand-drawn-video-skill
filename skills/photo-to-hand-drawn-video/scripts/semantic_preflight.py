@@ -330,7 +330,32 @@ def analyze_image(
         )
         landmark_source = "detector-bounds-fallback"
     else:
-        masks["face_hull"] = np.zeros((height, width), dtype=bool)
+        # Anime fallback: MediaPipe is trained on real faces and often misses
+        # stylized 2D faces. Approximate the face from the hair mask: the face
+        # sits around the upper-center of the hair region (observed ~0.69w,
+        # ~0.22h inside hair bounds for the tested illustration set).
+        hair_mask = masks.get("hair", np.zeros((height, width), dtype=bool))
+        hair_bounds_fallback = mask_bounds(hair_mask)
+        if hair_bounds_fallback:
+            hair_w = max(1, hair_bounds_fallback.width)
+            hair_h = max(1, hair_bounds_fallback.height)
+            face_w = max(12, round(hair_w * 0.5))
+            face_h = max(12, round(hair_h * 0.28))
+            face_cx = round(hair_bounds_fallback.left + hair_w * 0.69)
+            face_cy = round(hair_bounds_fallback.top + hair_h * 0.22)
+            face_left = max(0, face_cx - face_w // 2)
+            face_top = max(0, face_cy - face_h // 2)
+            face_right = min(width, face_left + face_w)
+            face_bottom = min(height, face_top + face_h)
+            fallback_bounds = Bounds(
+                face_left, face_top, max(face_left + 1, face_right), max(face_top + 1, face_bottom)
+            )
+            masks["face_hull"] = face_mask_from_bounds(fallback_bounds, width, height)
+            face_count = 1
+            landmark_source = "anime-hair-fallback"
+            detected_face_bounds = [fallback_bounds]
+        else:
+            masks["face_hull"] = np.zeros((height, width), dtype=bool)
 
     face_bounds = mask_bounds(masks["face_hull"])
     if face_bounds:
@@ -501,8 +526,8 @@ def main() -> int:
         ),
         running_mode=vision.RunningMode.IMAGE,
         num_faces=2,
-        min_face_detection_confidence=0.45,
-        min_face_presence_confidence=0.45,
+        min_face_detection_confidence=0.2,
+        min_face_presence_confidence=0.2,
     )
     segmenter_options = vision.ImageSegmenterOptions(
         base_options=python.BaseOptions(
