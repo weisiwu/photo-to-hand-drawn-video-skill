@@ -89,6 +89,18 @@ def parse_arguments() -> argparse.Namespace:
         default="marker",
         help="Brush style: marker (default), pencil (graphite), ink (sumi wash), airbrush.",
     )
+    parser.add_argument(
+        "--brush-blink-on",
+        type=float,
+        default=0.12,
+        help="Seconds the brush cursor is visible per blink cycle.",
+    )
+    parser.add_argument(
+        "--brush-blink-off",
+        type=float,
+        default=0.50,
+        help="Seconds the brush cursor hides between blinks (hand lifting).",
+    )
     parser.add_argument("--skip-video-validation", action="store_true")
     return parser.parse_args()
 
@@ -302,6 +314,8 @@ def main() -> int:
             "artboard": arguments.artboard_size,
             "viewSize": arguments.view_size,
             "brushStyle": arguments.brush_style,
+            "blinkOn": arguments.brush_blink_on,
+            "blinkOff": arguments.brush_blink_off,
             "rate": arguments.playback_rate,
             "dynamic": arguments.dynamic_brush,
             **(

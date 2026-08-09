@@ -1214,8 +1214,17 @@
         activeContext.clearRect(0, 0, ARTBOARD_SIZE, ARTBOARD_SIZE);
         window.__cursorDebug = null;
         const rawBrushTipState = tipState || recentCompletedStrokeTipState();
+        // The brush icon blinks: it appears for a short window, then hides
+        // for a longer rest (like a hand lifting between strokes). User:
+        // "画笔每多少帧出现一次，其他时候不出现" — a continuously moving
+        // cursor reads as "too fast" even when the painting is slow.
+        const brushBlinkOnSeconds = parseFloat(pageParameters.get('blinkOn') || '0.12');
+        const brushBlinkOffSeconds = parseFloat(pageParameters.get('blinkOff') || '0.50');
+        const brushCycleSeconds = brushBlinkOnSeconds + brushBlinkOffSeconds;
+        const brushCyclePhase = ((currentTimeSeconds - 2) % brushCycleSeconds + brushCycleSeconds) % brushCycleSeconds;
         const shouldShowBrushIcon = currentTimeSeconds >= 2
-          && currentTimeSeconds < DRAWING_END_SECONDS;
+          && currentTimeSeconds < DRAWING_END_SECONDS
+          && brushCyclePhase < brushBlinkOnSeconds;
         if (shouldShowBrushIcon && rawBrushTipState) {
           const displayedBrushTipState = smoothBrushIconTip(rawBrushTipState, playbackTimeSeconds);
           window.__cursorDebug = {
