@@ -1181,6 +1181,7 @@
         artCanvas.style.transform = cameraTransform;
         refineCanvas.style.transform = cameraTransform;
         activeCanvas.style.transform = cameraTransform;
+        window.__cameraState = cameraState;
       }
 
       function animateIntroCard(currentTimeSeconds) {
@@ -1214,6 +1215,7 @@
         activeContext.clearRect(0, 0, ARTBOARD_SIZE, ARTBOARD_SIZE);
         window.__cursorDebug = null;
         const rawBrushTipState = tipState || recentCompletedStrokeTipState();
+        const hideBrush = pageParameters.get('hideBrush') === '1';
         // The brush icon blinks: it appears for a short window, then hides
         // for a longer rest (like a hand lifting between strokes). User:
         // "画笔每多少帧出现一次，其他时候不出现" — a continuously moving
@@ -1222,7 +1224,8 @@
         const brushBlinkOffSeconds = parseFloat(pageParameters.get('blinkOff') || '0.50');
         const brushCycleSeconds = brushBlinkOnSeconds + brushBlinkOffSeconds;
         const brushCyclePhase = ((currentTimeSeconds - 2) % brushCycleSeconds + brushCycleSeconds) % brushCycleSeconds;
-        const shouldShowBrushIcon = currentTimeSeconds >= 2
+        const shouldShowBrushIcon = !hideBrush
+          && currentTimeSeconds >= 2
           && currentTimeSeconds < DRAWING_END_SECONDS
           && brushCyclePhase < brushBlinkOnSeconds;
         if (shouldShowBrushIcon && rawBrushTipState) {
@@ -1240,6 +1243,24 @@
           lastBrushIconPlaybackTimeSeconds = -1;
         }
         updateCamera(playbackTimeSeconds);
+        // Brush trajectory in VIDEO coordinates (stage px), recorded after
+        // the camera state is known so the compositing pass can draw the
+        // cursor at the exact spot it would appear on screen.
+        if (window.__brushTrace && rawBrushTipState && rawBrushTipState.tip) {
+          const camera = window.__cameraState || { scale: 1, focusX: 0.5, focusY: 0.5 };
+          const displayX = ARTBOARD_VIEW_SIZE * 0.5
+            + camera.scale * (rawBrushTipState.tip.x / ARTBOARD_SIZE * ARTBOARD_VIEW_SIZE - camera.focusX * ARTBOARD_VIEW_SIZE);
+          const displayY = ARTBOARD_VIEW_SIZE * 0.5
+            + camera.scale * (rawBrushTipState.tip.y / ARTBOARD_SIZE * ARTBOARD_VIEW_SIZE - camera.focusY * ARTBOARD_VIEW_SIZE);
+          window.__brushTrace.push({
+            t: playbackTimeSeconds,
+            x: VIEW_LEFT + displayX,
+            y: VIEW_TOP + displayY,
+            active: Boolean(tipState),
+          });
+        } else if (window.__brushTrace) {
+          window.__brushTrace.push({ t: playbackTimeSeconds, x: -1, y: -1, active: false });
+        }
         lastTimeSeconds = currentTimeSeconds;
       }
 
@@ -1265,6 +1286,7 @@
         scheduledStrokes = buildStrokeSchedule();
         resetPainting();
         render(0);
+        window.__brushTrace = [];
         window.__duration = VIDEO_DURATION_SECONDS;
         window.__strokeStats = strokePlan.stats;
         window.__adaptiveTimeline = usesAdaptiveTimeline;
