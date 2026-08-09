@@ -90,11 +90,14 @@
       const ARTBOARD_SIZE = parseInt(pageParameters.get('artboard') || '3840', 10);
       const ARTBOARD_VIEW_SIZE = parseInt(pageParameters.get('viewSize') || '960', 10);
       const INTERNAL_RENDER_SCALE = ARTBOARD_SIZE / ARTBOARD_VIEW_SIZE;
+      // Playback speed: `rate` = source seconds consumed per playback second.
+      // Default 3.0 matches the original pace; 1.5 halves the drawing speed.
+      const RATE_SCALE = (parseFloat(pageParameters.get('rate') || '3.0')) / 3.0;
       const SOURCE_DURATION_SECONDS = 354.0;
-      const NORMAL_PLAYBACK_RATE = 3.0;
+      const NORMAL_PLAYBACK_RATE = 3.0 * RATE_SCALE;
       // Fine strokes are difficult to perceive at full-canvas scale, so compress this
       // section without changing the early construction or final camera movement.
-      const DETAIL_PLAYBACK_RATE = 7.0;
+      const DETAIL_PLAYBACK_RATE = 7.0 * RATE_SCALE;
       const DETAIL_SOURCE_START_SECONDS = 60.0;
       const DETAIL_SOURCE_END_SECONDS = 230.0;
       const DETAIL_PLAYBACK_START_SECONDS = DETAIL_SOURCE_START_SECONDS / NORMAL_PLAYBACK_RATE;
@@ -102,7 +105,7 @@
         + (DETAIL_SOURCE_END_SECONDS - DETAIL_SOURCE_START_SECONDS) / DETAIL_PLAYBACK_RATE;
       const S_OPTIMIZATION_SOURCE_START_SECONDS = 230.0;
       const S_OPTIMIZATION_SOURCE_END_SECONDS = 334.0;
-      const S_OPTIMIZATION_PLAYBACK_RATE = 8.0;
+      const S_OPTIMIZATION_PLAYBACK_RATE = 8.0 * RATE_SCALE;
       const S_OPTIMIZATION_PLAYBACK_START_SECONDS = DETAIL_PLAYBACK_END_SECONDS;
       const S_OPTIMIZATION_PLAYBACK_END_SECONDS = S_OPTIMIZATION_PLAYBACK_START_SECONDS
         + (S_OPTIMIZATION_SOURCE_END_SECONDS - S_OPTIMIZATION_SOURCE_START_SECONDS)
@@ -312,6 +315,46 @@
       };
       const brushStyleName = pageParameters.get('brushStyle') || 'marker';
       const PHASE_BRUSHES = BRUSH_STYLES[brushStyleName] || BRUSH_STYLES.marker;
+      // Dynamic brush mode: pick from a per-brush pool and jitter width/alpha
+      // per stroke with a deterministic seed so renders stay reproducible.
+      const BRUSH_DYNAMIC = pageParameters.get('dynamic') !== '0';
+      const BRUSH_POOLS = {
+        liner: ['liner', 'shade', 'hard_blot'],
+        shade: ['shade', 'hard_blot', 'small_blot'],
+        marker: ['marker', 'dry_marker'],
+        dry_marker: ['dry_marker', 'marker'],
+        dry_brush: ['dry_brush', 'coarse_bulk_1', 'small_blot'],
+        coarse_bulk_1: ['coarse_bulk_1', 'hard_blot', 'small_blot'],
+        coarse_bulk_2: ['coarse_bulk_2', 'coarse_bulk_1', 'hard_blot'],
+        coarse_bulk_3: ['coarse_bulk_3', 'dry_brush', 'hard_blot'],
+        hard_blot: ['hard_blot', 'shade', 'small_blot'],
+        small_blot: ['small_blot', 'shade', 'hard_blot'],
+        textured_ink: ['textured_ink', 'irregular_ink'],
+        irregular_ink: ['irregular_ink', 'ink_blot'],
+        ink_blot: ['ink_blot', 'irregular_ink', 'hard_blot'],
+        fur: ['fur', 'textured_ink', 'irregular_ink'],
+        airbrush_a: ['airbrush_a', 'big_airbrush', 'soft'],
+        big_airbrush: ['big_airbrush', 'airbrush_a', 'soft'],
+        soft: ['soft', 'airbrush_a', 'big_airbrush'],
+      };
+      function strokeSeed(stroke) {
+        let hash = 2166136261;
+        const source = `${stroke.phase}:${stroke.points[0] ? stroke.points[0].join(',') : ''}:${stroke.color}`;
+        for (let index = 0; index < source.length; index += 1) {
+          hash ^= source.charCodeAt(index);
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      }
+      function mulberry32(seed) {
+        let state = seed >>> 0;
+        return function () {
+          state += 0x6D2B79F5;
+          let value = Math.imul(state ^ (state >>> 15), 1 | state);
+          value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+          return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+        };
+      }
       const WIDE_FILL_BRUSH_PX = Infinity; // dry_marker texture disabled: coverage first
 
       const videoFrame = document.getElementById('video-frame');
@@ -578,14 +621,25 @@
         }
         const totalLength = Math.max(lengths[lengths.length - 1], 1e-6);
 
-        const [brushName, widthScale, alphaOverride, useMultiply, maxWidthPx] = PHASE_BRUSHES[stroke.phase] || PHASE_BRUSHES.region_fill;
+        const [brushName, widthScaleBase, alphaOverride, useMultiply, maxWidthPx] = PHASE_BRUSHES[stroke.phase] || PHASE_BRUSHES.region_fill;
         let resolvedBrush = brushName;
+        let widthScale = widthScaleBase;
+        let resolvedAlphaOverride = alphaOverride;
+        if (BRUSH_DYNAMIC) {
+          const random = mulberry32(strokeSeed(stroke));
+          const pool = BRUSH_POOLS[resolvedBrush] || [resolvedBrush];
+          resolvedBrush = pool[Math.floor(random() * pool.length)];
+          widthScale = widthScaleBase * (0.82 + random() * 0.36);
+          if (alphaOverride != null) {
+            resolvedAlphaOverride = clamp(alphaOverride + (random() - 0.5) * 0.12, 0.30, 1.0);
+          }
+        }
         const widthPx = Math.min(
           maxWidthPx * INTERNAL_RENDER_SCALE,
           Math.max(1.2 * INTERNAL_RENDER_SCALE, stroke.width * ARTBOARD_SIZE * widthScale),
         );
         if (stroke.phase === 'region_fill' && widthPx >= WIDE_FILL_BRUSH_PX) resolvedBrush = 'dry_marker';
-        const alpha = alphaOverride == null ? clamp(stroke.alpha, 0.15, 0.97) : alphaOverride;
+        const alpha = resolvedAlphaOverride == null ? clamp(stroke.alpha, 0.15, 0.97) : resolvedAlphaOverride;
         const colorStops = (stroke.colorStops || [stroke.color]).map(hexToRgb);
         const isFillLike = stroke.phase === 'region_fill'
           || stroke.phase === 'region_glaze'
@@ -860,9 +914,38 @@
         activeContext.restore();
       }
 
+      // Optional custom background image: loads async, then redraws the whole
+      // stage so the image stays underneath the board grid and paper sheet.
+      const backgroundImagePath = pageParameters.get('bgImage');
+      const backgroundImageElement = backgroundImagePath ? new Image() : null;
+      if (backgroundImageElement) {
+        backgroundImageElement.onload = () => drawStageBackground();
+        backgroundImageElement.src = backgroundImagePath;
+      }
+
       function drawStageBackground() {
         stageContext.fillStyle = '#14231f';
         stageContext.fillRect(0, 0, STAGE_WIDTH, STAGE_HEIGHT);
+        if (backgroundImageElement && backgroundImageElement.complete
+          && backgroundImageElement.naturalWidth > 0) {
+          const bgOpacity = parseFloat(pageParameters.get('bgOpacity') || '0.85');
+          stageContext.save();
+          stageContext.globalAlpha = bgOpacity;
+          const imageScale = Math.max(
+            STAGE_WIDTH / backgroundImageElement.naturalWidth,
+            STAGE_HEIGHT / backgroundImageElement.naturalHeight,
+          );
+          const drawWidth = backgroundImageElement.naturalWidth * imageScale;
+          const drawHeight = backgroundImageElement.naturalHeight * imageScale;
+          stageContext.drawImage(
+            backgroundImageElement,
+            (STAGE_WIDTH - drawWidth) / 2,
+            (STAGE_HEIGHT - drawHeight) / 2,
+            drawWidth,
+            drawHeight,
+          );
+          stageContext.restore();
+        }
         const boardGradient = stageContext.createLinearGradient(0, 0, STAGE_WIDTH, STAGE_HEIGHT);
         boardGradient.addColorStop(0, '#36584f');
         boardGradient.addColorStop(0.48, '#2d4b44');

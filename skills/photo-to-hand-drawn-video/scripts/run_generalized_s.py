@@ -35,9 +35,30 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--attempt", type=int, default=0, choices=(0, 1, 2))
     parser.add_argument("--budget-scale", type=float, default=2.0)
     parser.add_argument("--render", action="store_true")
-    parser.add_argument("--duration", type=float, default=64.03)
+    parser.add_argument("--duration", type=float, default=None,
+                        help="Output duration in seconds; auto-computed from --playback-rate when omitted.")
     parser.add_argument("--fps", type=int, default=25)
     parser.add_argument("--music", type=Path)
+    parser.add_argument(
+        "--playback-rate",
+        type=float,
+        default=3.0,
+        help="Drawing pace: source seconds consumed per playback second. "
+        "3.0 is the original fast pace; 1.5 draws at half speed (longer video).",
+    )
+    parser.add_argument(
+        "--background-image",
+        type=Path,
+        help="Optional image drawn underneath the board (cover-fit, 85% opacity).",
+    )
+    parser.add_argument(
+        "--dynamic-brush",
+        type=int,
+        choices=(0, 1),
+        default=1,
+        help="1 (default): per-stroke brush pool + width/alpha jitter for a "
+        "livelier hand-drawn feel; 0: fixed phase brushes.",
+    )
     parser.add_argument(
         "--stage-width",
         type=int,
@@ -99,6 +120,22 @@ def project_relative_url(path: Path) -> str:
     return path.resolve().relative_to(PROJECT_ROOT).as_posix()
 
 
+def compute_duration(playback_rate: float) -> float:
+    """Mirror the renderer's VIDEO_DURATION_SECONDS for a given playback rate.
+
+    Source timeline: 0-60s normal, 60-230s detail (7x), 230-334s S optimization
+    (8x), 334-354s normal. All rates scale with the user playback rate.
+    """
+    rate_scale = playback_rate / 3.0
+    normal = 3.0 * rate_scale
+    detail = 7.0 * rate_scale
+    s_optimization = 8.0 * rate_scale
+    detail_start = 60.0 / normal
+    detail_end = detail_start + (230.0 - 60.0) / detail
+    s_optimization_end = detail_end + (334.0 - 230.0) / s_optimization
+    return s_optimization_end + (354.0 - 334.0) / normal
+
+
 def run_semantic_preflight(
     subject_type: str,
     reference_path: Path,
@@ -109,19 +146,23 @@ def run_semantic_preflight(
     report_path = run_directory / "semantic-preflight.json"
 
     if subject_type == "anime":
+        anime_command = [
+            sys.executable,
+            str(PROJECT_ROOT / "semantic_preflight_anime.py"),
+            "--reference",
+            str(reference_path),
+            "--target",
+            str(target_path),
+            "--output-dir",
+            str(run_directory),
+            "--attempt",
+            str(attempt),
+        ]
+        target_transform = target_path.with_name("target-transform.json")
+        if target_transform.exists():
+            anime_command.extend(["--target-transform", str(target_transform)])
         anime_exit_code = run_command(
-            [
-                sys.executable,
-                str(PROJECT_ROOT / "semantic_preflight_anime.py"),
-                "--reference",
-                str(reference_path),
-                "--target",
-                str(target_path),
-                "--output-dir",
-                str(run_directory),
-                "--attempt",
-                str(attempt),
-            ],
+            anime_command,
             accepted_exit_codes={0, 2, 3},
         )
         return anime_exit_code, json.loads(report_path.read_text(encoding="utf-8"))
@@ -175,6 +216,13 @@ def main() -> int:
     staged_target = run_directory / "target.png"
     stage_image(arguments.reference, staged_reference, "JPEG")
     stage_image(arguments.target, staged_target, "PNG")
+    source_transform = arguments.target.with_name("target-transform.json")
+    if source_transform.exists():
+        (run_directory / "target-transform.json").write_bytes(source_transform.read_bytes())
+    staged_background = None
+    if arguments.background_image:
+        staged_background = run_directory / "background.jpg"
+        stage_image(arguments.background_image, staged_background, "JPEG")
 
     semantic_report = run_directory / "semantic-preflight.json"
     preflight_exit_code, preflight = run_semantic_preflight(
@@ -254,11 +302,19 @@ def main() -> int:
             "artboard": arguments.artboard_size,
             "viewSize": arguments.view_size,
             "brushStyle": arguments.brush_style,
+            "rate": arguments.playback_rate,
+            "dynamic": arguments.dynamic_brush,
+            **(
+                {"bgImage": project_relative_url(staged_background)}
+                if staged_background
+                else {}
+            ),
         }
     )
     raw_video = run_directory / "generalized-s-raw.mp4"
     final_video = run_directory / "generalized-s.mp4"
     if arguments.render:
+        render_duration = arguments.duration or compute_duration(arguments.playback_rate)
         render_environment = os.environ.copy()
         bundled_node_modules = (
             Path.home()
@@ -276,7 +332,7 @@ def main() -> int:
                 "node",
                 str(PROJECT_ROOT / "render-video-chunked.cjs"),
                 str(RENDERER_HTML),
-                f"--duration={arguments.duration}",
+                f"--duration={render_duration}",
                 f"--fps={arguments.fps}",
                 f"--width={arguments.stage_width}",
                 f"--height={arguments.stage_height}",
@@ -286,7 +342,7 @@ def main() -> int:
             environment=render_environment,
         )
         if arguments.music:
-            fade_start = max(0.0, arguments.duration - 2.0)
+            fade_start = max(0.0, render_duration - 2.0)
             run_command(
                 [
                     "ffmpeg",
