@@ -1,9 +1,8 @@
 .DS_Store
 .venv/
 node_modules/
-skills/photo-to-hand-drawn-video/scripts/models/
-skills/photo-to-hand-drawn-video/scripts/vendor/
-skills/photo-to-hand-drawn-video/scripts/runs/
+# 技能事实源已迁至 AI/Agent能力库/photo-to-hand-drawn-video/；本目录仅为运行时环境镜像
+skills/
 runs/
 *.mp4
 !docs/demo-s-kitten-silent.mp4

@@ -1,4 +1,0 @@
-interface:
-  display_name: "照片转真实逐笔手绘视频"
-  short_description: "把单人物或单只宠物照片规划为可验证的真实逐笔手绘视频"
-  default_prompt: "Use $photo-to-hand-drawn-video to turn this photo and stylized target into a verified stroke-by-stroke drawing video."
